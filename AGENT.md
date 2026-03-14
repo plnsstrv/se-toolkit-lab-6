@@ -83,6 +83,27 @@ List files and directories at a given path.
 - Returns newline-separated listing
 - Returns error string if directory doesn't exist
 
+## Example Output
+
+```json
+{
+  "answer": "To resolve a merge conflict, edit the file and choose which changes to keep.",
+  "source": "wiki/git-workflow.md#resolving-merge-conflicts",
+  "tool_calls": [
+    {
+      "tool": "list_files",
+      "args": {"path": "wiki"},
+      "result": "git-workflow.md\nREADME.md"
+    },
+    {
+      "tool": "read_file",
+      "args": {"path": "wiki/git-workflow.md"},
+      "result": "# Git Workflow..."
+    }
+  ]
+}
+```
+
 ## Agentic Loop
 
 The agentic loop implements the following logic:
