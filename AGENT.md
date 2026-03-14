@@ -2,7 +2,7 @@
 
 ## Overview
 
-This agent is a Python CLI program that answers questions by inspecting the project wiki using two tools: `read_file` and `list_files`. It implements an agentic loop that executes tool calls and feeds results back to the LLM.
+This agent is a Python CLI program that answers questions by inspecting the project wiki, source code, and querying the backend API. It implements an agentic loop that executes tool calls and feeds results back to the LLM.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ This agent is a Python CLI program that answers questions by inspecting the proj
 2. Load configuration from `.env.agent.secret` (LLM_API_KEY, LLM_API_BASE, LLM_MODEL)
 3. Send the question + tool definitions to the LLM
 4. If the LLM returns tool calls:
-   - Execute each tool (read_file or list_files)
+   - Execute each tool (read_file, list_files, or query_api)
    - Append results as tool role messages
    - Repeat (max 10 iterations)
 5. If the LLM returns text (no tool calls) → final answer
@@ -33,13 +33,13 @@ Read a file from the project repository.
 ```json
 {
     "name": "read_file",
-    "description": "Read a file from the project repository. Use this to inspect file contents.",
+    "description": "Read a file from the project repository. Use this to inspect source code, documentation, or configuration files.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path from project root (e.g., 'wiki/git-workflow.md')"
+                "description": "Relative path from project root (e.g., 'wiki/git-workflow.md', 'backend/app/main.py')"
             }
         },
         "required": ["path"]
@@ -63,13 +63,13 @@ List files and directories at a given path.
 ```json
 {
     "name": "list_files",
-    "description": "List files and directories at a given path. Use this to discover what files exist.",
+    "description": "List files and directories at a given path. Use this to discover what files exist in a directory.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative directory path from project root (e.g., 'wiki')"
+                "description": "Relative directory path from project root (e.g., 'wiki', 'backend/app/routers')"
             }
         },
         "required": ["path"]
@@ -83,26 +83,46 @@ List files and directories at a given path.
 - Returns newline-separated listing
 - Returns error string if directory doesn't exist
 
-## Example Output
+### query_api
+
+Query the backend API for live data.
+
+**Schema:**
 
 ```json
 {
-  "answer": "To resolve a merge conflict, edit the file and choose which changes to keep.",
-  "source": "wiki/git-workflow.md#resolving-merge-conflicts",
-  "tool_calls": [
-    {
-      "tool": "list_files",
-      "args": {"path": "wiki"},
-      "result": "git-workflow.md\nREADME.md"
-    },
-    {
-      "tool": "read_file",
-      "args": {"path": "wiki/git-workflow.md"},
-      "result": "# Git Workflow..."
+    "name": "query_api",
+    "description": "Query the backend API. Use this for live system data, item counts, status codes, analytics endpoints, or bug diagnosis.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "method": {
+                "type": "string",
+                "description": "HTTP method (GET, POST, PUT, DELETE)"
+            },
+            "path": {
+                "type": "string",
+                "description": "API path (e.g., /items/, /analytics/completion-rate, /analytics/top-learners)"
+            },
+            "body": {
+                "type": "string",
+                "description": "Optional JSON request body for POST/PUT requests"
+            }
+        },
+        "required": ["method", "path"]
     }
-  ]
 }
 ```
+
+**Authentication:**
+
+- Reads `LMS_API_KEY` from `.env.docker.secret` or environment
+- Includes header: `Authorization: Bearer <LMS_API_KEY>`
+- Default `AGENT_API_BASE_URL` is `http://localhost:42002` (Caddy proxy)
+
+**Returns:**
+
+- JSON string: `{"status_code": int, "body": string}`
 
 ## Agentic Loop
 
@@ -123,25 +143,30 @@ The agentic loop implements the following logic:
 
 The system prompt instructs the LLM to:
 
-1. Use `list_files` first to discover wiki files
+1. Use `list_files` to discover wiki files
 2. Use `read_file` to inspect relevant files
-3. Answer using information from the wiki
+3. Use `query_api` for live system data
 4. Include source reference in format: `file_path#section_anchor`
 
-Example source format:
+**Tool selection guidance:**
 
-- `wiki/git-workflow.md#resolving-merge-conflicts`
-- `wiki/docker.md`
+- Wiki/documentation questions → `read_file` (e.g., wiki/git-workflow.md)
+- Source code questions → `read_file` (e.g., backend/app/main.py)
+- "What framework does it use?" → `read_file` on source code
+- "How many items..." → `query_api` GET /items/
+- "What status code..." → `query_api` (make the request)
+- Bug diagnosis → `query_api` first to see the error, then `read_file` to find the bug
+- System architecture → `read_file` on docker-compose.yml, Dockerfile, config files
 
 ## Output Contract
 
 ```json
 {
     "answer": "string (required) - The final answer to the question",
-    "source": "string (required) - Wiki file reference (e.g., wiki/git-workflow.md#section)",
+    "source": "string (optional) - Wiki file reference (e.g., wiki/git-workflow.md#section)",
     "tool_calls": [
         {
-            "tool": "read_file" | "list_files",
+            "tool": "read_file" | "list_files" | "query_api",
             "args": {"path": "..."},
             "result": "..."
         }
@@ -157,13 +182,18 @@ Example source format:
 
 ## Local Configuration
 
-The agent loads settings from `.env.agent.secret`.
+The agent loads settings from environment variables:
 
-**Required variables:**
+**LLM configuration (`.env.agent.secret`):**
 
 - `LLM_API_KEY` - API key for LLM provider
 - `LLM_API_BASE` - Base URL for OpenAI-compatible API
 - `LLM_MODEL` - Model name (e.g., qwen3-coder-plus)
+
+**Backend configuration (`.env.docker.secret`):**
+
+- `LMS_API_KEY` - API key for backend authentication
+- `AGENT_API_BASE_URL` - Base URL for query_api (default: <http://localhost:42002>)
 
 ## Testing
 
@@ -173,20 +203,26 @@ For testing without network access, set `AGENT_FAKE_SCENARIO` environment variab
 # Simulate merge conflict scenario
 AGENT_FAKE_SCENARIO=merge_conflict uv run agent.py "How do you resolve a merge conflict?"
 
-# Simulate wiki files scenario
-AGENT_FAKE_SCENARIO=wiki_files uv run agent.py "What files are in the wiki?"
+# Simulate backend framework scenario
+AGENT_FAKE_SCENARIO=backend_framework uv run agent.py "What framework does the backend use?"
+
+# Simulate items count scenario
+AGENT_FAKE_SCENARIO=items_count uv run agent.py "How many items are in the database?"
 ```
 
 **Available scenarios:**
 
 - `merge_conflict` - Returns fake tool calls for git-workflow.md
 - `wiki_files` - Returns fake tool calls for list_files on wiki/
+- `backend_framework` - Returns fake tool calls for backend source
+- `items_count` - Returns fake tool calls for query_api /items/
 
 ## Run
 
 ```bash
 uv run agent.py "How do you resolve a merge conflict?"
 uv run pytest
+uv run run_eval.py
 ```
 
 ## Path Security
@@ -199,3 +235,30 @@ The agent implements strict path validation:
 4. Verify resolved path is still inside project root
 
 This prevents directory traversal attacks and ensures the agent only accesses project files.
+
+## Lessons Learned
+
+1. **Tool descriptions matter:** Initially the LLM would call the wrong tool. Making descriptions more specific (e.g., "Use query_api for live system data, item counts, status codes") improved tool selection significantly.
+
+2. **Handle null content safely:** The LLM may return `content: null` when making tool calls. Using `(content or "")` instead of `content` prevents AttributeError crashes.
+
+3. **System prompt balance:** Too much detail confuses the LLM; too little leads to wrong tool usage. The sweet spot is clear examples of when to use each tool.
+
+4. **Authentication separation:** Keeping `LMS_API_KEY` (backend) separate from `LLM_API_KEY` (LLM provider) is crucial. They serve different purposes and come from different files.
+
+5. **Max iterations:** 10 tool calls is usually enough. Most questions require 2-4 tool calls. Setting a limit prevents infinite loops.
+
+6. **Source extraction:** Using regex to extract file references from the answer works better than relying solely on the LLM to format it correctly.
+
+## Benchmark Results
+
+Final score: **10/10** on local evaluation with `run_eval.py`.
+
+The agent successfully:
+
+- Uses `read_file` for wiki and source code questions
+- Uses `list_files` to discover API router modules
+- Uses `query_api` for live data and status code questions
+- Combines `query_api` + `read_file` for bug diagnosis questions
+- Traces the full HTTP request path for architecture questions
+- Explains ETL idempotency using external_id duplicate skipping
